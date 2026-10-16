@@ -1,0 +1,14 @@
+name: Runner test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check runner
+        run: |
+          echo "Gitea Actions runner werkt!"
+          echo "De CI-job is gestart."
+          docker version

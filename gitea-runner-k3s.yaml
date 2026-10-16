@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea-runner
+  namespace: ci
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gitea-runner
+  template:
+    metadata:
+      labels:
+        app: gitea-runner
+    spec:
+      containers:
+        - name: runner
+          image: docker.io/gitea/runner:2.3-dind
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: CONFIG_FILE
+              value: /config.yaml
+          volumeMounts:
+            - name: runner-data
+              mountPath: /data
+            - name: runner-config
+              mountPath: /config.yaml
+              readOnly: true
+      volumes:
+        - name: runner-data
+          hostPath:
+            path: /var/lib/act_runner
+            type: Directory
+        - name: runner-config
+          hostPath:
+            path: /etc/act_runner/config.yaml
+            type: File
+EOF

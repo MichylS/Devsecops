@@ -1,0 +1,17 @@
+
+[Unit]
+Description=Gitea Actions Runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=act_runner
+Group=act_runner
+WorkingDirectory=/var/lib/act_runner
+Environment=HOME=/var/lib/act_runner
+ExecStart=/usr/local/bin/gitea-runner daemon --config /etc/act_runner/config.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
