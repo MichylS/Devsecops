@@ -1,0 +1,38 @@
+name: Demo website CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  html-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: HTML controleren
+        run: |
+          test -f index.html
+          grep -qi '<html' index.html
+          grep -qi '<h1>Mijn DevSecOps-demo</h1>' index.html
+          grep -qi 'Versie: 1.0' index.html
+          echo "HTML-controles geslaagd"
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: Trivy security-scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret,vuln
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL

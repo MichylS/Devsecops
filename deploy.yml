@@ -1,0 +1,26 @@
+name: Handmatige productie-deployment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: deployment
+
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: HTML controleren
+        run: |
+          test -f index.html
+          grep -qi '<html' index.html
+          grep -Fqi 'Mijn DevSecOps-demo' index.html
+          echo "HTML-controles geslaagd."
+
+      - name: Deployment voorbereiden
+        run: |
+          echo "Handmatige productie-deployment gestart."
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Commit: $GITHUB_SHA"
+          echo "De HTML is gecontroleerd."
