@@ -179,3 +179,102 @@ We bouwen het project in kleine stappen op, zodat je het goed kunt uitleggen tij
 4. Goedkeuring inbouwen — de productie-update pas starten na een bewuste handmatige actie.
 5. Deployen naar productie — de nieuwe versie uitrollen en controleren of de website is bijgewerkt.
 
+namespace voor isolatie
+
+Wat betekent dit?
+Namespace: demo
+
+Een namespace is een logische scheiding binnen Kubernetes. Zo kunnen we de demo-website apart beheren zonder je bestaande Gitea-installatie te wijzigen.
+
+
+Stap 2 — Start de webserver in K3s
+
+sudo kubectl create deployment demo-website \
+  --image=nginx:alpine \
+  --namespace=demo
+
+Wat gebeurt hier?
+- demo-website is de naam van onze applicatie.
+- nginx:alpine is een lichte webserver-image.
+- -n demo zorgt dat alles in onze aparte namespace komt.
+
+Stap 3 — Maak de website bereikbaar binnen Kubernetes
+Voer dit commando uit
+
+1. Wat is Traefik?
+Traefik is een ingress controller: hij ontvangt webverkeer en stuurt dat door naar de juiste applicatie in Kubernetes.
+Vergelijk het met de receptionist van een gebouw: bezoekers melden zich bij de ingang en Traefik bepaalt naar welke applicatie ze moeten.
+
+. Waarom kunnen we de website nog niet openen?
+Je Service heeft dit adres:
+10.43.183.36:80
+Dat is een intern Kubernetes-adres. Je laptop kan daar normaal gesproken niet rechtstreeks bij. Daarom voegen we een Ingress toe die Traefik vertelt waar het verkeer naartoe moet.
+We gebruiken voorlopig HTTP en je bestaande interne netwerk. We maken de website niet publiek toegankelijk.
+
+nano demo-website-ingress.yaml
+
+plak hoer de yaml in
+
+sudo kubectl apply -f demo-website-ingress.yaml
+
+nu de website beetje voorbereiden 
+
+Stap 1 — De eigen website voorbereiden
+We beginnen met de HTML-pagina. Voer op je Ubuntu-server uit: 
+
+map genaamt des-demo-app daarin een html bestand deze nu in een config map sturen
+
+sudo kubectl create configmap demo-website-html \
+  --from-file=index.html \
+  -n demo
+
+
+Let op: als je de melding krijgt dat ConfigMap al bestaat, stop dan even en stuur me die melding.
+Een ConfigMap is een Kubernetes-object waarin we configuratiebestanden kunnen bewaren. We gebruiken hem om onze HTML-pagina aan de webserver te leveren.
+
+tap 3 — Laat Nginx jouw pagina gebruiken
+Voer dit pas uit als stap 2 gelukt is:
+sudo kubectl patch deployment demo-website -n demo --type=strategic -p '
+spec:
+  template:
+    spec:
+      volumes:
+        - name: website-html
+          configMap:
+            name: demo-website-html
+      containers:
+        - name: nginx
+          volumeMounts:
+            - name: website-html
+              mountPath: /usr/share/nginx/html
+
+
+nu map kopplen aan gitea Wat we hierna gaan doen
+1. Gitea koppelen: de HTML-code in dso-demo-app opslaan.
+2. Automatische test: bij iedere codewijziging controleert Gitea Actions of de HTML geldig is.
+3. Security-scan: een controle toevoegen op mogelijke kwetsbaarheden.
+4. Goedkeuring en deployment: pas na jouw bewuste goedkeuring versie 2.0 naar de demo-website uitrollen.
+
+Stap 3 — Koppel Git aan Gitea
+Als de repository inderdaad bestaat, voer dan deze opdrachten uit: cd ~/dso-demo-app
+git init
+git branch -M main
+git remote add origin http://gitea.10.24.20.224.sslip.io/ms/dso-demo-app.git
+
+Stap 2 — Voeg de website toe
+Voer uit:
+git add index.html
+git commit -m "Add demo website"
+
+
+Controleer dat de commit is aangemaakt:
+git log --oneline -3
+
+
+Stap 3 — Push naar Gitea
+Voer uit:
+git push -u origin main
+
+Stap 1 — Automatische CI-test toevoegen
+De workflow moet automatisch starten als je code naar main pusht. Hij controleert dan of je HTML-bestand bestaat en of de belangrijkste onderdelen erin staan
+
