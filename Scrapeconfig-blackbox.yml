@@ -1,0 +1,16 @@
+- job_name: 'blackbox-demo-website'
+  metrics_path: /probe
+  params:
+    module: [http_2xx]
+  static_configs:
+    - targets:
+        - http://demo.10.24.20.224.sslip.io
+  relabel_configs:
+    - source_labels: [__address__]
+      target_label: __param_target
+    - source_labels: [__param_target]
+      target_label: instance
+    - target_label: __address__
+      replacement: blackbox-prometheus-blackbox-exporter.monitoring.svc.cluster.local:9115
+EOF
+

@@ -1,0 +1,97 @@
+cd ~/dso-demo-app
+mkdir -p .gitea/workflows
+
+cat > .gitea/workflows/deploy.yaml <<'EOF'
+name: Handmatige productie-deployment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: deployment
+
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: Controleren en deployen naar Kubernetes
+        env:
+          K8S_TOKEN: ${{ secrets.K8S_TOKEN }}
+        run: |
+          set -eu
+
+          echo "=== 1. HTML controleren ==="
+          test -f index.html
+          grep -qi '<html' index.html
+          grep -Fqi 'Mijn DevSecOps-demo' index.html
+          grep -Fqi 'Versie:' index.html
+          echo "HTML-controles geslaagd."
+
+          echo "=== 2. Kubernetes-client controleren ==="
+          if ! command -v kubectl >/dev/null 2>&1; then
+            KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+            curl -fsSLo /tmp/kubectl \
+              "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+            chmod +x /tmp/kubectl
+            export PATH="/tmp:$PATH"
+          fi
+
+          echo "=== 3. Kubernetes-toegang instellen ==="
+          SA_DIR=/var/run/secrets/kubernetes.io/serviceaccount
+
+          if [ -z "${K8S_TOKEN:-}" ]; then
+            if [ ! -r "$SA_DIR/token" ] || [ ! -r "$SA_DIR/ca.crt" ]; then
+              echo "FOUT: Kubernetes ServiceAccount-token of CA ontbreekt."
+              echo "De deployment-job heeft geen toegang tot de ServiceAccount-mount."
+              exit 1
+            fi
+            K8S_TOKEN="$(cat "$SA_DIR/token")"
+          fi
+
+          if [ -r "$SA_DIR/ca.crt" ]; then
+            CA_FILE="$SA_DIR/ca.crt"
+          else
+            echo "FOUT: het Kubernetes CA-certificaat ontbreekt."
+            exit 1
+          fi
+
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          mkdir -p "$RUNNER_TEMP"
+
+          kubectl config set-cluster demo-k3s \
+            --server=https://kubernetes.default.svc \
+            --certificate-authority="$CA_FILE" \
+            --embed-certs=true
+
+          kubectl config set-credentials deploy-runner \
+            --token="$K8S_TOKEN"
+
+          kubectl config set-context deploy \
+            --cluster=demo-k3s \
+            --user=deploy-runner \
+            --namespace=demo
+
+          kubectl config use-context deploy
+
+          echo "=== 4. Rechten controleren ==="
+          kubectl auth can-i get configmap/demo-website-html
+          kubectl auth can-i patch configmap/demo-website-html
+          kubectl auth can-i get deployment/demo-website
+          kubectl auth can-i patch deployment/demo-website
+
+          echo "=== 5. ConfigMap bijwerken ==="
+          kubectl create configmap demo-website-html \
+            --from-file=index.html=index.html \
+            --dry-run=client -o yaml |
+            kubectl apply -f -
+
+          echo "=== 6. Website vernieuwen ==="
+          kubectl rollout restart deployment/demo-website
+          kubectl rollout status deployment/demo-website --timeout=120s
+
+          echo "=== 7. Deployment afgerond ==="
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Commit: $GITHUB_SHA"
+          echo "De ConfigMap is bijgewerkt en de rollout is voltooid."
+EOF

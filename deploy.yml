@@ -13,14 +13,68 @@ jobs:
 
       - name: HTML controleren
         run: |
+          set -eu
           test -f index.html
           grep -qi '<html' index.html
           grep -Fqi 'Mijn DevSecOps-demo' index.html
           echo "HTML-controles geslaagd."
 
-      - name: Deployment voorbereiden
+      - name: Kubernetes voorbereiden
+        env:
+          K8S_TOKEN: ${{ secrets.K8S_TOKEN }}
         run: |
-          echo "Handmatige productie-deployment gestart."
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Commit: $GITHUB_SHA"
-          echo "De HTML is gecontroleerd."
+          set -eu
+
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "FOUT: curl ontbreekt op de runner."
+            exit 1
+          fi
+
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -fsSL \
+              https://dl.k8s.io/release/v1.32.0/bin/linux/amd64/kubectl \
+              -o /tmp/kubectl
+            chmod +x /tmp/kubectl
+            export PATH="/tmp:$PATH"
+          fi
+
+          if [ -z "${K8S_TOKEN:-}" ]; then
+            if [ -r /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+              K8S_TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+            else
+              echo "FOUT: geen Kubernetes-token beschikbaar."
+              echo "De runner-job heeft geen toegang tot het ServiceAccount-token."
+              exit 1
+            fi
+          fi
+
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          kubectl config set-cluster demo-k3s \
+            --server=https://kubernetes.default.svc \
+            --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+            --embed-certs=true
+          kubectl config set-credentials deploy-runner --token="$K8S_TOKEN"
+          kubectl config set-context deploy \
+            --cluster=demo-k3s \
+            --user=deploy-runner \
+            --namespace=demo
+          kubectl config use-context deploy
+          kubectl auth can-i patch configmap/demo-website-html
+
+      - name: ConfigMap bijwerken
+        run: |
+          set -eu
+          export PATH="/tmp:$PATH"
+          kubectl create configmap demo-website-html \
+            --from-file=index.html=index.html \
+            --dry-run=client -o yaml |
+            kubectl apply -f -
+          echo "ConfigMap bijgewerkt."
+
+      - name: Website vernieuwen en controleren
+        run: |
+          set -eu
+          export PATH="/tmp:$PATH"
+          kubectl rollout restart deployment/demo-website
+          kubectl rollout status deployment/demo-website --timeout=120s
+          echo "Deployment geslaagd."

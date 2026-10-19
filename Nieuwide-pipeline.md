@@ -866,3 +866,247 @@ Stap 2 — Controleer of hij online komt
 Als de logs Runner registered successfully of een vergelijkbare succesvolle registratie tonen, kijk dan in Gitea bij Site Administration → Actions → Runners.
 Als hij nog niet online is, stuur dan de nieuwe logs door. Deel daarbij geen tokenwaarden. Zodra de runner werkt, gaan we de deployment-workflow afmaken zodat een wijziging in je Git-repository de website in Kubernetes kan bijwerken.
 
+Goed nieuws: de runner werkt nu correct en de HTML-controles slagen. We zijn weer een stap verder. De fout zit nu alleen in de Kubernetes-toegang vanuit de deployment-job.
+De job draait in een Docker-container. Die container krijgt niet automatisch de Kubernetes-ServiceAccount-token en het CA-certificaat van de runner-pod.
+We lossen dit op door de bestaande K8S_TOKEN-secret te gebruiken en het CA-certificaat veilig beschikbaar te maken voor de workflow.
+
+Let op: dit token verloopt na 24 uur. Dit is bruikbaar om de workflow te testen, maar voor een duurzame oplossing moeten we tokenbeheer nog verbeteren
+
+
+nu hierverder 
+
+Wat we daarna gaan bouwen
+
+Prometheus + Grafana
+Meetgegevens verzamelen en dashboards maken voor k3s, pods, CPU en geheugen. We gebruiken de Kubernetes-monitoringstack die hiervoor bedoeld is. Officiële chartdocumentatie
+
+Websitebewaking
+Een HTTP-controle test periodiek of jouw website bereikbaar is. We kunnen ook de responstijd meten. Blackbox Exporter-documentatie
+
+Buildmonitoring
+Zichtbaar maken of CI-builds slagen of falen, zodat ook onderdeel 5 aantoonbaar is.
+
+We gebruiken de Helm-chart kube-prometheus-stack. Die bevat onder andere Prometheus, Grafana, Alertmanager en Kubernetes-monitoringcomponenten.
+
+.2 Voeg de Helm-repository toe
+helm repo add prometheus-community \
+  https://prometheus-community.github.io/helm-charts
+
+helm repo update
+
+Stap 1 — Monitoring installeren
+Voer dit uit op je VM:
+helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --set grafana.adminPassword='Admin!123' \
+  --set prometheus.prometheusSpec.retention=3d \
+  --set prometheus.prometheusSpec.resources.requests.cpu=200m \
+  --set prometheus.prometheusSpec.resources.requests.memory=512Mi \
+  --set prometheus.prometheusSpec.resources.limits.memory=1Gi \
+  --set grafana.resources.requests.cpu=100m \
+  --set grafana.resources.requests.memory=128Mi \
+  --set grafana.resources.limits.memory=512Mi \
+  --set alertmanager.enabled=false \
+  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false
+kreeg error conction refused
+
+Dit doet het volgende:
+- Prometheus verzamelt metrics over Kubernetes en de infrastructuur.
+- Grafana toont die gegevens in dashboards.
+- 3 dagen retentie beperkt de hoeveelheid opgeslagen meetgegevens.
+- Resource-limieten helpen voorkomen dat monitoring onnodig veel geheugen gebruikt.
+- Alertmanager wordt uitgeschakeld om de installatie eenvoudiger te houden.
+
+nu met een yml 
+
+sudo helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+  --kubeconfig /etc/rancher/k3s/k3s.yaml \
+  --namespace monitoring \
+  --set grafana.adminPassword='Admin!123' \
+  --set prometheus.prometheusSpec.retention=3d \
+  --set prometheus.prometheusSpec.resources.requests.cpu=200m \
+  --set prometheus.prometheusSpec.resources.requests.memory=512Mi \
+  --set prometheus.prometheusSpec.resources.limits.memory=1Gi \
+  --set grafana.resources.requests.cpu=100m \
+  --set grafana.resources.requests.memory=128Mi \
+  --set grafana.resources.limits.memory=512Mi \
+  --set alertmanager.enabled=false \
+  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false
+  Stap 1 — Voeg de repository toe voor root
+
+Voer deze commando's uit:
+sudo helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+sudo helm repo update
+
+
+Controleer of de repository zichtbaar is:
+sudo helm repo list
+
+EVISION: 1
+NOTES:
+kube-prometheus-stack has been installed. Check its status by running:
+  kubectl --namespace monitoring get pods -l "release=monitoring"
+
+Get Grafana 'admin' user password by running:
+
+  kubectl --namespace monitoring get secrets monitoring-grafana -o jsonpath="{.data.admin-password}" | base64 -d ; echo
+
+Access Grafana local instance:
+
+  export POD_NAME=$(kubectl --namespace monitoring get pod -l "app.kubernetes.io/name=grafana,app.kubernetes.io/instance=monitoring" -oname)
+  kubectl --namespace monitoring port-forward $POD_NAME 3000
+
+Get your grafana admin user password by running:
+
+  kubectl get secret --namespace monitoring -l app.kubernetes.io/component=admin-secret -o jsonpath="{.items[0].data.admin-password}" | base64 --decode ; echo
+
+
+Visit https://github.com/prometheus-operator/kube-prometheus for instructions on how to create & configure Alertmanager and Prometheus instances using the Operator
+
+daarna checken of het runed\
+sudo k3s kubectl get pods -n monitoring
+en port forwarding aanzteen
+
+sudo k3s kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
+werkt niet ingre maken op trafic
+
+sudo tee /tmp/grafana-ingress.yaml > /dev/null <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: grafana.10.24.20.224.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: monitoring-grafana
+                port:
+                  number: 80
+EOF
+
+Ga daarna naar Dashboards in het menu aan de linkerkant. De kube-prometheus-stack levert standaard dashboards mee voor Kubernetes.
+
+http://grafana.10.24.20.224.sslip.io/
+
+Stap 3 — Je website daadwerkelijk monitoren
+We installeren de Blackbox Exporter. Die probeert je website via HTTP te bereiken en meet onder andere of het verzoek slaagt en hoelang het duurt.
+We gebruiken hiervoor:
+http://demo.10.24.20.224.sslip.io
+
+
+3.1 Blackbox Exporter installeren
+
+sudo helm upgrade --install blackbox prometheus-community/prometheus-blackbox-exporter \
+  --kubeconfig /etc/rancher/k3s/k3s.yaml \
+  --namespace monitoring
+
+   sudo helm upgrade --install blackbox prometheus-community/prometheus-blackbox-exporter \
+  --kubeconfig /etc/rancher/k3s/k3s.yaml \
+  --namespace monitoring
+Release "blackbox" does not exist. Installing it now.
+NAME: blackbox
+LAST DEPLOYED: Sun Oct 18 10:56:43 2026
+NAMESPACE: monitoring
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+See https://github.com/prometheus/blackbox_exporter/ for how to configure Prometheus and the Blackbox Exporter.
+
+1. Get the application URL by running these commands:
+  export POD_NAME=$(kubectl get pods --namespace monitoring -l "app.kubernetes.io/name=prometheus-blackbox-exporter,app.kubernetes.io/instance=blackbox" -o jsonpath="{.items[0].metadata.name}")
+  export CONTAINER_PORT=$(kubectl get pod --namespace monitoring $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
+  echo "Visit http://127.0.0.1:8080 to use your application"
+  kubectl --namespace monitoring port-forward $POD_NAME 8080:$CONTAINER_PORT
+
+Stap 3.1 — Maak de extra scrape-configuratie
+Voer dit volledige commando uit:
+sudo tee /tmp/blackbox-additional.yaml > /dev/null <<'EOF'
+- job_name: 'blackbox-demo-website'
+  metrics_path: /probe
+  params:
+    module: [http_2xx]
+  static_configs:
+    - targets:
+        - http://demo.10.24.20.224.sslip.io
+  relabel_configs:
+    - source_labels: [__address__]
+      target_label: __param_target
+    - source_labels: [__param_target]
+      target_label: instance
+    - target_label: __address__
+      replacement: blackbox-prometheus-blackbox-exporter.monitoring.svc.cluster.local:9115
+EOF
+
+
+Maak daarvan een Kubernetes Secret:
+sudo k3s kubectl create secret generic blackbox-additional-config \
+  --namespace monitoring \
+  --from-file=prometheus-additional.yaml=/tmp/blackbox-additional.yaml
+
+
+Stap 3.2 — Koppel de configuratie aan Prometheus
+We controleren eerst welke extra configuratie de Prometheus-resource ondersteunt. Voer uit:
+sudo k3s kubectl get prometheus monitoring-kube-prometheus-prometheus \
+  -n monitoring -o yaml | grep -A8 -B4 additionalScrapeConfigs
+
+
+  ci.yml fixen
+
+  Stap 1 — Open ci.yaml
+Voer op je VM uit:
+cd ~/dso-demo-app
+nano .gitea/workflows/ci.yaml
+
+
+Vervang de volledige inhoud door onderstaande code:
+
+name: Demo website CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  html-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: HTML controleren
+        run: |
+          pwd
+          ls -la
+          test -f index.html
+          grep -Fqi 'Mijn DevSecOps-demo' index.html
+          grep -Fqi 'Versie: 2.0' index.html
+          echo "HTML-controles geslaagd"
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: Trivy security-scan
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            aquasec/trivy:0.69.3 \
+            fs \
+            --scanners secret,vuln \
+            --format table \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            .
