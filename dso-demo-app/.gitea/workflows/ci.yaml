@@ -1,0 +1,198 @@
+name: Demo website CI
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'k8s/**'   # de tag-commit van de CI zelf start geen nieuwe CI
+  pull_request:
+
+env:
+  REGISTRY: gitea.10.24.20.224.sslip.io
+  IMAGE: gitea.10.24.20.224.sslip.io/ms/dso-demo-app
+  TRIVY: aquasec/trivy:0.69.3
+  SEMGREP: semgrep/semgrep:1.181.1
+  SYFT: anchore/syft:v1.55.0
+  ZAP: ghcr.io/zaproxy/zaproxy:2.17.0
+
+jobs:
+  # ───────────── Fase 1: broncode controleren ─────────────
+  html-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: HTML controleren
+        run: |
+          test -f index.html
+          grep -Fqi 'Mijn DevSecOps-demo' index.html
+          grep -Fqi 'Versie:' index.html
+          echo "HTML-controles geslaagd"
+
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Semgrep SAST-scan
+        run: |
+          bash scripts/scan.sh "$SEMGREP" \
+            semgrep scan \
+            --config p/default \
+            --config p/dockerfile \
+            --config p/kubernetes \
+            --metrics=off \
+            --error \
+            /src
+
+  secret-vuln-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Trivy-scan op kwetsbaarheden en geheimen
+        run: |
+          bash scripts/scan.sh "$TRIVY" \
+            fs \
+            --scanners secret,vuln \
+            --format table \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            /src
+
+  config-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Trivy-scan van Dockerfile en Kubernetes-manifests
+        run: |
+          bash scripts/scan.sh "$TRIVY" \
+            config \
+            --format table \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            /src
+
+  # ───────────── Fase 2: image bouwen en testen ─────────────
+  build:
+    needs: [html-check, sast, secret-vuln-scan, config-validation]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Image bouwen
+        run: docker build -t "$IMAGE:${GITHUB_SHA::7}" .
+
+      - name: Trivy-scan van de image
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
+            image \
+            --format table \
+            --exit-code 1 \
+            --severity CRITICAL \
+            "$IMAGE:${GITHUB_SHA::7}"
+
+  sbom:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: SBOM genereren met Syft
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$SYFT" \
+            "$IMAGE:${GITHUB_SHA::7}" -o spdx-json -q > sbom.spdx.json
+          echo "Aantal packages in de image: $(jq '.packages | length' sbom.spdx.json)"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$SYFT" \
+            "$IMAGE:${GITHUB_SHA::7}" -q
+
+      - name: SBOM bewaren
+        uses: actions/upload-artifact@c6a3b2bd78b3985e4b2f15397fec357f0fd808de  # v3.2.2-node20
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.spdx.json
+
+  dast:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Website starten zoals in productie (read-only, geen root)
+        run: |
+          docker network create "dast-$GITHUB_RUN_ID"
+          docker run -d --rm \
+            --network "dast-$GITHUB_RUN_ID" \
+            --name "site-$GITHUB_RUN_ID" \
+            --read-only --tmpfs /tmp \
+            --user 101 --cap-drop ALL \
+            --security-opt no-new-privileges \
+            "$IMAGE:${GITHUB_SHA::7}"
+          sleep 3
+
+      - name: OWASP ZAP baseline-scan
+        run: |
+          # Geen bind-mount (zie scripts/scan.sh): regels erin en rapport eruit via docker cp
+          mkdir -p zap && cp .zap/rules.tsv zap/ && chmod -R 777 zap
+          docker create --name "zap-$GITHUB_RUN_ID" \
+            --network "dast-$GITHUB_RUN_ID" \
+            "$ZAP" \
+            zap-baseline.py \
+            -t "http://site-$GITHUB_RUN_ID:8080" \
+            -c rules.tsv \
+            -r zap-report.html
+          docker cp zap/. "zap-$GITHUB_RUN_ID:/zap/wrk"
+          docker start -a "zap-$GITHUB_RUN_ID" || true
+          rc="$(docker inspect "zap-$GITHUB_RUN_ID" --format '{{.State.ExitCode}}')"
+          docker cp "zap-$GITHUB_RUN_ID:/zap/wrk/zap-report.html" zap/ || true
+          exit "$rc"
+
+      - name: ZAP-rapport bewaren
+        if: always()
+        uses: actions/upload-artifact@c6a3b2bd78b3985e4b2f15397fec357f0fd808de  # v3.2.2-node20
+        with:
+          name: zap-report-${{ github.sha }}
+          path: zap/zap-report.html
+
+      - name: Opruimen
+        if: always()
+        run: |
+          docker rm -f "site-$GITHUB_RUN_ID" "zap-$GITHUB_RUN_ID" || true
+          docker network rm "dast-$GITHUB_RUN_ID" || true
+
+  # ───────────── Fase 3: release klaarzetten voor Argo CD ─────────────
+  release:
+    needs: [sbom, dast]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Image pushen naar Gitea Registry
+        env:
+          CI_TOKEN: ${{ secrets.CI_TOKEN }}
+        run: |
+          echo "$CI_TOKEN" | docker login "$REGISTRY" -u ms --password-stdin
+          docker push "$IMAGE:${GITHUB_SHA::7}"
+          docker logout "$REGISTRY"
+
+      - name: Nieuwe versie klaarzetten voor Argo CD
+        env:
+          CI_TOKEN: ${{ secrets.CI_TOKEN }}
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          sed -i -E "s#^( *image: ).*#\1$IMAGE:$TAG#" k8s/deployment.yaml
+          git config user.name "Gitea CI"
+          git config user.email "ci@gitea.local"
+          git add k8s/deployment.yaml
+          git commit -m "Deploy image $TAG"
+          git push "http://ms:${CI_TOKEN}@gitea.10.24.20.224.sslip.io/ms/dso-demo-app.git" HEAD:main

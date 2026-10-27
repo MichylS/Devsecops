@@ -3,6 +3,33 @@ kind: Namespace
 metadata:
   name: ci
 ---
+# Docker-in-Docker mag naar de Gitea-registry over HTTP pushen
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: docker-daemon
+  namespace: ci
+data:
+  daemon.json: '{"insecure-registries":["gitea.10.24.20.224.sslip.io"]}'
+---
+# Vervangt het standaard s6-startscript van de runner. Het origineel gebruikt
+# s6-svwait, maar s6-notifyoncheck geeft het na een paar pogingen op als dockerd
+# traag start. Daardoor startte de runner soms nooit ("No matching online runner").
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runner-start
+  namespace: ci
+data:
+  run: |
+    #!/usr/bin/env bash
+    # Vervangt s6-svwait: wacht zelf (zonder limiet) tot dockerd reageert.
+    until docker info >/dev/null 2>&1; do
+      echo "Runner wacht op Docker..."
+      sleep 3
+    done
+    exec run.sh
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,6 +53,12 @@ spec:
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "[g]itea-runner daemon"]
+            initialDelaySeconds: 180
+            periodSeconds: 60
+            failureThreshold: 3
           env:
             - name: CONFIG_FILE
               value: /config.yaml
@@ -34,6 +67,14 @@ spec:
               mountPath: /data
             - name: runner-config
               mountPath: /config.yaml
+              readOnly: true
+            - name: docker-daemon
+              mountPath: /etc/docker/daemon.json
+              subPath: daemon.json
+              readOnly: true
+            - name: runner-start
+              mountPath: /etc/s6/gitea-runner/run
+              subPath: run
               readOnly: true
       volumes:
         - name: runner-data
@@ -44,4 +85,10 @@ spec:
           hostPath:
             path: /etc/act_runner/config.yaml
             type: File
-EOF
+        - name: docker-daemon
+          configMap:
+            name: docker-daemon
+        - name: runner-start
+          configMap:
+            name: runner-start
+            defaultMode: 0755

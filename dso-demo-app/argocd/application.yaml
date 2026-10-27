@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-website
+  namespace: argocd
+spec:
+  project: default
+  source:
+    # Intern cluster-adres van Gitea, zodat Argo CD niet via Traefik hoeft
+    repoURL: http://gitea-http.gitea.svc.cluster.local:3000/ms/dso-demo-app.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  # Bewust GEEN syncPolicy.automated:
+  # iemand moet in Argo CD op "Sync" klikken = handmatige validatie naar productie.

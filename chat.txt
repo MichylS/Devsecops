@@ -1,0 +1,369 @@
+Hieronder staat een samenvatting van ons hele proces voor jouw DSO-bouwstraatproject. Ik beschrijf welke applicaties we hebben opgezet, hoe ze samenwerken, wat we hebben geconfigureerd en welke problemen we hebben opgelost. Je kunt deze samenvatting gebruiken om je project te documenteren of je voor te bereiden op je presentatie.
+Samenvatting DSO-bouwstraatproject
+1. Het doel van het project
+Het doel was om een werkende DevSecOps-bouwstraat op te zetten. Daarbij hebben we verschillende applicaties gecombineerd om software te ontwikkelen, automatisch te controleren, handmatig uit te rollen en te monitoren.
+
+We hebben hiervoor een Ubuntu Server-VM gebruikt waarop K3s draait. K3s is een lichte Kubernetes-distributie waarmee we de applicaties als containers in een Kubernetes-cluster kunnen uitvoeren.
+
+De bouwstraat bestaat uit zes onderdelen:
+1. Versiebeheer en CI/CD.
+2. Software controleren en handmatig uitrollen.
+3. Een webapplicatie hosten.
+4. De beschikbaarheid van de webapplicatie monitoren.
+5. De CI/CD-processen volgen.
+6. De infrastructuur monitoren.
+2. De infrastructuur
+We zijn begonnen met een Ubuntu Server 24.04.5 LTS-VM op Proxmox.
+
+Op deze VM hebben we K3s geïnstalleerd. Vervolgens hebben we Kubernetes gebruikt om de verschillende applicaties te beheren.
+Onderdeel	Functie
+Proxmox	Virtualisatieplatform waarop de VM draait.
+Ubuntu Server 24.04.5 LTS	Besturingssysteem van de VM.
+K3s	Beheert de containers en applicaties binnen Kubernetes.
+Kubernetes-namespaces	Scheiden de verschillende onderdelen logisch van elkaar.
+Traefik Ingress	Maakt webapplicaties bereikbaar via HTTP-hostnamen.
+
+
+We hebben onder andere de namespaces demo, monitoring en ci gebruikt.
+
+De namespace demo bevat de website, monitoring bevat de monitoringapplicaties en ci bevat de runners die de workflows uitvoeren.
+3. Gitea — versiebeheer en CI/CD
+We hebben Gitea geïnstalleerd om onze broncode te beheren en de automatisering van de bouwstraat uit te voeren.
+
+De repository heet dso-demo-app.
+
+De repository bevat onder andere:
+dso-demo-app/
+├── index.html
+└── .gitea/
+    └── workflows/
+        ├── ci.yaml
+        ├── deploy.yaml
+        └── runner-test.yaml
+
+Wat doet Gitea?
+Gitea bewaart onze code en houdt wijzigingen bij. Daardoor kunnen we zien welke aanpassingen zijn gemaakt en welke versie van de code is opgeslagen.
+
+We gebruiken Gitea Actions voor het uitvoeren van workflows.
+
+Wanneer we wijzigingen naar de branch main pushen, kan automatisch de CI-workflow worden gestart.
+
+De website is bereikbaar via:
+
+Gitea-webinterface
+4. Gitea Actions — automatische controle van de code
+Voor de automatisering hebben we Gitea Actions gebruikt.
+
+We hebben twee belangrijke workflows ingericht.
+Workflow 1: CI
+Het bestand .gitea/workflows/ci.yaml bevat de automatische controles.
+
+De workflow bestaat uit twee jobs.
+
+Job 1: HTML controleren
+
+Deze job haalt de code op uit Gitea en controleert of het verwachte bestand en de vereiste teksten aanwezig zijn.
+
+De controles omvatten:
+- Bestaat index.html?
+- Bevat het bestand de tekst Mijn DevSecOps-demo?
+- Bevat het bestand een versievermelding?
+Als een controle faalt, wordt de job als mislukt gemarkeerd.
+
+Job 2: Securityscan
+
+Voor de securityscan gebruiken we Trivy.
+
+Trivy controleert de repository op onder andere kwetsbaarheden en geheimen.
+
+De scan is geconfigureerd om te stoppen wanneer er bevindingen met de ernst HIGH of CRITICAL worden gevonden.
+
+Hiermee hebben we een beveiligingscontrole in de ontwikkelworkflow opgenomen.
+Hoe werkt de CI-workflow?
+Het proces ziet er als volgt uit:
+1. We wijzigen de code op de VM.
+2. We committen de wijziging.
+3. We pushen de wijziging naar Gitea.
+4. Gitea Actions start de CI-workflow.
+5. De code wordt opgehaald.
+6. De HTML-controles worden uitgevoerd.
+7. Trivy voert de securityscan uit.
+8. Gitea toont de resultaten.
+We hebben tijdens het testen een probleem opgelost waarbij de HTML-controle mislukte. De website bevatte versie 2.1, terwijl de workflow nog naar versie 2.0 zocht. We hebben de versiecontrole aangepast zodat deze controleert op de aanwezigheid van Versie:.
+
+Resultaat: de CI-workflow werkt nu.
+5. Handmatige deployment — gecontroleerd uitrollen
+Naast de automatische CI-workflow hebben we een afzonderlijke deployment-workflow gemaakt.
+
+Deze staat in:
+.gitea/workflows/deploy.yaml
+
+De deployment-workflow is handmatig te starten via Gitea Actions.
+
+Dit is belangrijk omdat we niet iedere wijziging direct automatisch naar de draaiende applicatie willen uitrollen.
+Wat gebeurt er tijdens de deployment?
+De workflow is ingericht om de volgende stappen uit te voeren:
+1. De code ophalen.
+2. De HTML-controles uitvoeren.
+3. Toegang tot Kubernetes configureren.
+4. De websiteconfiguratie bijwerken.
+5. De Kubernetes-Deployment opnieuw starten.
+6. Controleren of de applicatie gereed is.
+7. Controleren of de website bereikbaar is.
+We hebben hiervoor Kubernetes-rechten ingericht met een ServiceAccount, een Role en een RoleBinding.
+
+De ServiceAccount heet deploy-runner en staat in de namespace demo. De bijbehorende rechten zijn beperkt tot de benodigde resources en handelingen.
+
+Ook hebben we Gitea Secrets gebruikt voor de Kubernetes-toegang.
+
+Resultaat: je hebt bevestigd dat zowel de automatische CI-workflow als de handmatige deployment-workflow werken.
+Waarom is dit belangrijk?
+De CI-workflow controleert de code. De deployment-workflow bepaalt wanneer de gecontroleerde applicatie wordt uitgerold.
+
+Zo is er een duidelijk onderscheid tussen het controleren van software en het beschikbaar maken ervan.
+6. De website — applicatie in Kubernetes
+We hebben een eigen demo-website gemaakt en deze in Kubernetes geplaatst.
+
+De website draait in de namespace:
+demo
+
+De belangrijkste Kubernetes-resources zijn:
+Resource	Naam	Functie
+Deployment	demo-website	Beheert de websitepods.
+ConfigMap	demo-website-html	Bevat de inhoud van de website.
+Ingress	Websitehostnaam	Maakt de website via HTTP bereikbaar.
+
+
+De Deployment gebruikt de containerimage:
+nginx:alpine
+
+NGINX is de webserver die de website-inhoud aanbiedt.
+
+De ConfigMap bevat de website-inhoud en wordt gekoppeld aan de locatie waar NGINX de webbestanden verwacht:
+/usr/share/nginx/html
+
+Hierdoor kunnen we de website-inhoud bijwerken via Kubernetes, zonder zelf een nieuwe NGINX-containerimage te bouwen.
+
+De website is bereikbaar via:
+
+Demo-website
+
+De inhoud bevat onder andere:
+- De titel Mijn DevSecOps-demo.
+- De versievermelding.
+- Een statusmelding.
+- Informatie over de DevSecOps-bouwstraat.
+7. Gitea Actions runners — uitvoeren van de workflows
+Om de workflows uit te voeren, hebben we Gitea Actions runners ingericht.
+
+De runners voeren de taken uit die in de workflowbestanden zijn beschreven.
+
+We hebben verschillende labels gebruikt, zodat workflows op de juiste runner kunnen worden uitgevoerd.
+
+De deployment-workflow gebruikt het label:
+deployment
+
+De runner voert de taken uit die nodig zijn om de applicatie te controleren en bij te werken.
+
+Tijdens het project hebben we problemen met de runnerconfiguratie onderzocht en opgelost, zodat de workflows daadwerkelijk konden worden uitgevoerd.
+
+Hiermee hebben we de verbinding gelegd tussen Gitea Actions en onze Kubernetes-omgeving.
+8. Prometheus — monitoring van de infrastructuur
+Voor de monitoring hebben we Prometheus geïnstalleerd via de Helm-chart kube-prometheus-stack.
+
+Prometheus verzamelt meetgegevens van de infrastructuur en Kubernetes-componenten.
+
+We hebben de monitoringapplicaties in de namespace geplaatst:
+monitoring
+
+De installatie bevat onder andere:
+- Prometheus.
+- Grafana.
+- Prometheus Node Exporter.
+- kube-state-metrics.
+- Prometheus Operator.
+Wat monitoren we hiermee?
+Prometheus verzamelt gegevens waarmee we inzicht kunnen krijgen in bijvoorbeeld:
+- CPU-gebruik.
+- Geheugengebruik.
+- Schijfgebruik.
+- De status van Kubernetes-resources.
+- De beschikbaarheid van gemonitorde endpoints.
+De Node Exporter levert systeemmetingen. kube-state-metrics levert informatie over de status van Kubernetes-resources.
+
+De Prometheus Operator helpt bij het beheren van de Prometheus-configuratie.
+
+Hierdoor kunnen we niet alleen naar de website kijken, maar ook naar de infrastructuur waarop deze draait.
+9. Grafana — dashboards en visualisatie
+We hebben Grafana gekoppeld aan Prometheus.
+
+Grafana maakt de verzamelde meetgegevens zichtbaar in dashboards.
+
+In plaats van alleen losse meetwaarden te bekijken, kunnen we grafieken gebruiken om veranderingen in de tijd te zien.
+
+Grafana is bereikbaar via:
+
+Grafana-webinterface
+
+Met Grafana kunnen we onder andere de infrastructuurmetingen bekijken en controleren of de monitoring werkt.
+
+Prometheus verzamelt de gegevens; Grafana visualiseert ze.
+10. Blackbox Exporter — controleren of de website bereikbaar is
+Voor het controleren van de beschikbaarheid van de website hebben we Prometheus Blackbox Exporter geïnstalleerd.
+
+Deze applicatie probeert een opgegeven endpoint te bereiken en rapporteert of de controle slaagt.
+
+We hebben Blackbox Exporter zo geconfigureerd dat hij de website controleert via:
+http://demo.10.24.20.224.sslip.io
+
+De configuratie gebruikt een Prometheus-scrapejob met de naam:
+blackbox-demo-website
+
+De relevante metriek is:
+probe_success
+
+De betekenis is:
+Waarde	Betekenis
+1	De controle is geslaagd.
+0	De controle is mislukt.
+
+
+We hebben gecontroleerd dat probe_success de waarde 1 teruggeeft.
+
+Dat betekent dat de HTTP-controle van de website op dat moment succesvol was.
+
+Dit is nuttig omdat een Kubernetes-pod wel kan draaien terwijl de website zelf toch niet goed bereikbaar is.
+
+Blackbox Exporter controleert de bereikbaarheid vanuit het perspectief van de probe.
+11. De volledige samenhang
+De kracht van het project zit in de samenwerking tussen de verschillende applicaties.
+
+Dit is het proces dat we hebben gebouwd:
+                 ONTWIKKELING
+                      |
+                      v
+             +------------------+
+             |      Gitea       |
+             |  Broncodebeheer  |
+             +------------------+
+                      |
+                      v
+             +------------------+
+             |   Gitea Actions  |
+             |   CI-workflow    |
+             +------------------+
+                      |
+             +--------+--------+
+             |                 |
+             v                 v
+      HTML-controles       Trivy-scan
+             |                 |
+             +--------+--------+
+                      |
+                 CI geslaagd
+                      |
+                      v
+             Handmatige start
+                      |
+                      v
+             +------------------+
+             | Deployment-      |
+             | workflow         |
+             +------------------+
+                      |
+                      v
+             +------------------+
+             |   Kubernetes     |
+             |       K3s        |
+             +------------------+
+                      |
+                      v
+             +------------------+
+             |  NGINX-website   |
+             +------------------+
+                      |
+                      v
+                Website online
+
+       MONITORING VAN DE OMGEVING
+
+       Kubernetes / VM
+              |
+              v
+          Prometheus
+              |
+              +--------------------+
+              |                    |
+              v                    v
+       Systeemmetingen      Blackbox Exporter
+              |                    |
+              +---------+----------+
+                        |
+                        v
+                     Grafana
+                Dashboards en grafieken
+
+De CI-workflow controleert de code. De handmatige deployment-workflow rolt de website uit. Prometheus en Blackbox Exporter verzamelen gegevens over de omgeving en de bereikbaarheid van de website. Grafana maakt de meetgegevens zichtbaar.
+
+De monitoring staat daarmee naast het deploymentproces en helpt om de werking van de applicatie en infrastructuur te volgen.
+12. Overzicht van alle gebruikte applicaties
+Applicatie of technologie	Waarvoor gebruiken we deze?
+Proxmox	De virtuele machine draaien.
+Ubuntu Server	Het besturingssysteem van de VM.
+K3s	Kubernetes-cluster voor het uitvoeren van applicaties.
+Kubernetes	Beheer van deployments, pods, ConfigMaps en toegangsrechten.
+Gitea	Broncodebeheer en Git-repository.
+Gitea Actions	Automatiseren van CI- en deployment-workflows.
+Gitea Actions runners	De workflowtaken uitvoeren.
+NGINX	De demo-website aanbieden.
+Trivy	De repository scannen op geheimen en kwetsbaarheden.
+Helm	Kubernetes-applicaties installeren en beheren.
+Prometheus	Meetgegevens verzamelen.
+Grafana	Meetgegevens visualiseren in dashboards.
+Node Exporter	Systeemmetingen verzamelen.
+kube-state-metrics	Informatie over Kubernetes-resources verzamelen.
+Blackbox Exporter	Controleren of de website via HTTP bereikbaar is.
+Traefik	Inkomend HTTP-verkeer naar de juiste applicatie leiden.
+
+
+13. Welke problemen hebben we opgelost?
+Tijdens het project hebben we verschillende problemen onderzocht en opgelost.
+
+1. CI-controle faalde
+
+De workflow controleerde op versie 2.0, terwijl de website versie 2.1 bevatte. We hebben de versiecontrole aangepast, zodat die niet meer op één specifiek versienummer is vastgezet.
+
+2. De HTML-controle moest worden gecontroleerd
+
+We hebben de workflowlog uitgebreid met pwd en ls -la. Daarmee konden we bevestigen dat de runner in de juiste repositorymap werkte en index.html aanwezig was.
+
+3. CI en handmatige deployment moesten afzonderlijk werken
+
+We hebben een automatische CI-workflow en een handmatige deployment-workflow ingericht. Je hebt bevestigd dat beide werken.
+
+4. De website moest controleerbaar zijn
+
+We hebben Blackbox Exporter gekoppeld aan Prometheus. De metriek probe_success liet zien dat de HTTP-controle slaagde.
+
+5. De infrastructuur moest inzichtelijk worden
+
+Met Prometheus en Grafana hebben we monitoring toegevoegd voor de infrastructuur en Kubernetes.
+14. Koppeling aan de zes onderdelen van de opdracht
+Onderdeel	Onze implementatie	Wat je kunt demonstreren
+1. Versiebeheer en CI/CD	Gitea en Gitea Actions	De repository, commits en workflowruns.
+2. Build- en deploymentproces	Automatische CI en handmatige deployment	Een push, de controles en een handmatig gestarte deployment.
+3. Webapplicatie hosten	NGINX in K3s	De website in de browser en de Kubernetes-Deployment.
+4. Applicatiestatus monitoren	Blackbox Exporter en Prometheus	probe_success en de beschikbaarheid van de website.
+5. Buildproces monitoren	Gitea Actions	De workflowstatussen en de logs van de jobs.
+6. Infrastructuur monitoren	Prometheus, Node Exporter, kube-state-metrics en Grafana	Grafieken en meetgegevens van de infrastructuur.
+
+
+De tabel beschrijft hoe we de zes onderdelen hebben ingevuld. Of de implementatie aan alle beoordelingscriteria voldoet, hangt ook af van de precieze eisen van je opdracht.
+15. Conclusie
+Tijdens dit project hebben we een DevSecOps-bouwstraat opgebouwd waarin versiebeheer, geautomatiseerde controles, beveiligingsscans, handmatige deployment en monitoring samenwerken.
+
+Gitea beheert de broncode. Gitea Actions voert de workflows uit. Trivy controleert de repository op beveiligingsproblemen. De deployment-workflow werkt de website bij in Kubernetes. NGINX biedt de website aan, terwijl Prometheus, Blackbox Exporter en Grafana helpen om de beschikbaarheid en infrastructuur te monitoren.
+
+Het belangrijkste resultaat is dat we niet alleen een website hebben draaien, maar ook een proces hebben ingericht om de code te controleren, wijzigingen gecontroleerd uit te rollen en de omgeving te monitoren.
+
+Voor je eindpresentatie is het verstandig om van elk onderdeel een werkende demonstratie te laten zien. Daarmee toon je niet alleen dat de applicaties geïnstalleerd zijn, maar ook dat ze daadwerkelijk samenwerken.
